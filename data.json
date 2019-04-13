@@ -1,0 +1,20 @@
+{
+  "checkpointToTime": {
+    "A": 0.1,
+    "B": 0.2,
+    "C": 0.3
+  },
+  "checkpointToMetadata": {
+    "A": { "runtime": "X" },
+    "B": { "runtime": "Y" },
+    "C": { "runtime": "X" }
+  },
+  "edgeList": [
+    { "from": "A", "to": "B", "work": false} ,
+    { "from": "A", "to": "C", "work": true} 
+  ],
+  "runtimes": {
+    "X": { "index": 0, "color": "lightgreen" },
+    "Y": { "index": 1, "color": "orange" }
+  }
+}

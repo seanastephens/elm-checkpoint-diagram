@@ -1,30 +1,34 @@
 module Main exposing (main)
 
 import Browser exposing (sandbox)
-import Data exposing (..)
+import Debug as Debug
 import Dict as Dict
 import Html as Html
 import Html.Attributes as HAttr
 import Html.Events as HtmlE
+import Http as Http
+import Json.Decode as D
 import List as List
 import Svg exposing (Svg, line, rect, svg)
 import Svg.Attributes exposing (cx, cy, fill, height, r, rx, ry, stroke, strokeWidth, style, width, x, x1, x2, y, y1, y2)
 import Svg.Events as SvgE
 
 
+type alias CheckpointMetadataDefinition =
+    { runtime : String
+    }
 
--- Result.map2 throws away some errors if both sides are Err
+
+type alias EdgeMetadata =
+    { work : Bool }
 
 
-addResult : (t -> r -> s) -> Result (List e) t -> Result (List e) r -> Result (List e) s
-addResult f rl rr =
-    case ( rl, rr ) of
-        ( Err l, Err r ) ->
-            Err (l ++ r)
+type alias EdgeDefinition =
+    ( String, String, EdgeMetadata )
 
-        -- At most one side is Err now, so map2 is fine
-        ( l, r ) ->
-            Result.map2 f l r
+
+type alias RuntimeDefinition =
+    { index : Int, color : String }
 
 
 type alias Checkpoint =
@@ -36,6 +40,7 @@ type alias Checkpoint =
 
 type alias CheckpointMetadata =
     { runtime : String
+    , runtimeColor : String
     , runtimeIndex : Int
     }
 
@@ -49,36 +54,11 @@ type CheckpointVis
     | Group (List Checkpoint)
 
 
-
--- paste from hive
--- manual
-
-
-runtimeToIndex : String -> Result (List String) Int
-runtimeToIndex runtime =
-    let
-        go i list =
-            case list of
-                [] ->
-                    Err [ "Could not find runtime '" ++ runtime ++ "'" ]
-
-                x :: xs ->
-                    if x == runtime then
-                        Ok i
-
-                    else
-                        go (i + 1) xs
-    in
-    go 0 [ "UI", "HTML", "TS" ]
-
-
-checkpointColor : Checkpoint -> String
-checkpointColor c =
-    let
-        colors =
-            Dict.fromList [ ( "UI", "lightgreen" ), ( "HTML", "lightblue" ), ( "TS", "orange" ) ]
-    in
-    Dict.get c.metadata.runtime colors |> Maybe.withDefault "lightgrey"
+checkpointColor : Config -> Checkpoint -> String
+checkpointColor config c =
+    Dict.get c.metadata.runtime config.runtimes
+        |> Maybe.map (\runtime -> runtime.color)
+        |> Maybe.withDefault "lightgrey"
 
 
 checkpointX : Checkpoint -> Float
@@ -101,8 +81,8 @@ checkpointHeight _ =
     20
 
 
-renderCheckpoint : ViewConfig -> CheckpointVis -> Svg Msg
-renderCheckpoint viewConfig ca =
+renderCheckpoint : Config -> ViewConfig -> CheckpointVis -> Svg StateMsg
+renderCheckpoint config viewConfig ca =
     case ca of
         Single c ->
             let
@@ -112,7 +92,7 @@ renderCheckpoint viewConfig ca =
                         , cy <| String.fromFloat (checkpointY viewConfig c + checkpointHeight c / 2)
                         , rx <| String.fromFloat (checkpointWidth c / 2)
                         , ry <| String.fromFloat (checkpointHeight c / 2)
-                        , fill <| checkpointColor c
+                        , fill <| checkpointColor config c
                         , stroke "grey"
                         , strokeWidth "2"
                         , SvgE.onClick (Focus c)
@@ -165,35 +145,32 @@ renderEdge viewConfig ( from, to, { work } ) =
         []
 
 
-graph : Result (List String) ( List Checkpoint, List Edge )
-graph =
+graph : Config -> Result String ( List Checkpoint, List Edge )
+graph config =
     let
-        findPoint : String -> Result (List String) Checkpoint
-        findPoint e =
-            let
-                timeR =
-                    Result.fromMaybe [ "Could not find checkpoint time for '" ++ e ++ "'" ] <| Dict.get e checkpoints
-
-                checkpointMetadataDefR : Result (List String) CheckpointMetadataDefinition
-                checkpointMetadataDefR =
-                    Dict.get e checkpointMetadata
-                        |> Result.fromMaybe [ "Could not find checkpoint metadata for '" ++ e ++ "'" ]
-
-                metaRuntimeIndexR : Result (List String) Int
-                metaRuntimeIndexR =
-                    checkpointMetadataDefR
-                        |> Result.andThen (\meta -> runtimeToIndex meta.runtime)
-
-                metaR : Result (List String) CheckpointMetadata
-                metaR =
-                    Result.map2 (\def index -> { runtime = def.runtime, runtimeIndex = index }) checkpointMetadataDefR metaRuntimeIndexR
-            in
-            addResult (\time meta -> { time = time, metadata = meta, name = e }) timeR metaR
+        findPoint : String -> Result String Checkpoint
+        findPoint name =
+            Result.map2 (\time metadata -> { name = name, time = time, metadata = metadata })
+                (Dict.get name config.checkpointToTime
+                    |> Result.fromMaybe ("Could not find checkpoint time for '" ++ name ++ "'")
+                )
+                (Dict.get name config.checkpointToMetadata
+                    |> Result.fromMaybe ("Could not find checkpoint metadata for '" ++ name ++ "'")
+                    |> Result.andThen
+                        (\{ runtime } ->
+                            Dict.get runtime config.runtimes
+                                |> Maybe.map
+                                    (\def ->
+                                        { runtime = runtime, runtimeIndex = def.index, runtimeColor = def.color }
+                                    )
+                                |> Result.fromMaybe ("Could not find runtime definition for " ++ runtime)
+                        )
+                )
 
         findEdge ( a, b, work ) =
-            addResult (\l r -> ( l, r, work )) (findPoint a) (findPoint b)
+            Result.map2 (\l r -> ( l, r, work )) (findPoint a) (findPoint b)
 
-        validateEdge : Edge -> Result (List String) Edge
+        validateEdge : Edge -> Result String Edge
         validateEdge edge =
             let
                 ( from, to, { work } ) =
@@ -207,28 +184,27 @@ graph =
 
             else
                 Err
-                    [ "Checkpoints not in same runtime: " ++ from.name ++ " is in " ++ from.metadata.runtime ++ ", but " ++ to.name ++ " is in " ++ to.metadata.runtime
-                    ]
+                    ("Checkpoints not in same runtime: " ++ from.name ++ " is in " ++ from.metadata.runtime ++ ", but " ++ to.name ++ " is in " ++ to.metadata.runtime)
 
-        maybeEachEdge : List (Result (List String) Edge)
+        maybeEachEdge : List (Result String Edge)
         maybeEachEdge =
-            List.map findEdge edgeList
+            List.map findEdge config.edgeList
                 |> List.map (Result.andThen validateEdge)
 
-        maybeEachNode : List (Result (List String) Checkpoint)
+        maybeEachNode : List (Result String Checkpoint)
         maybeEachNode =
-            List.map findPoint (Dict.keys checkpoints)
+            List.map findPoint (Dict.keys config.checkpointToTime)
 
         maybeEdges =
             List.foldl
-                (addResult (::))
+                (Result.map2 (::))
                 (Ok [])
                 maybeEachEdge
 
         maybeNodes =
-            List.foldl (addResult (::)) (Ok []) maybeEachNode
+            List.foldl (Result.map2 (::)) (Ok []) maybeEachNode
     in
-    addResult (\a b -> ( a, b )) maybeNodes maybeEdges
+    Result.map2 Tuple.pair maybeNodes maybeEdges
 
 
 postProcess : ( List Checkpoint, List Edge ) -> ( List CheckpointVis, List Edge )
@@ -236,10 +212,24 @@ postProcess ( nodes, edges ) =
     ( List.map Single nodes, edges )
 
 
-type Msg
+type StateMsg
     = Focus Checkpoint
     | ChangeZoom String
     | ToggleShowName Bool
+
+
+type Msg
+    = FailedToLoad String
+    | ConfigLoaded Config
+    | StateUpdate StateMsg
+
+
+type alias Config =
+    { checkpointToTime : Dict.Dict String Float
+    , checkpointToMetadata : Dict.Dict String CheckpointMetadataDefinition
+    , edgeList : List EdgeDefinition
+    , runtimes : Dict.Dict String RuntimeDefinition
+    }
 
 
 type Focus
@@ -247,8 +237,15 @@ type Focus
     | FocusedOn Checkpoint
 
 
-type alias Model =
-    { focus : Focus
+type Model
+    = Loading
+    | Loaded State
+    | Broken String
+
+
+type alias State =
+    { config : Config
+    , focus : Focus
     , viewConfig : ViewConfig
     }
 
@@ -259,8 +256,8 @@ type alias ViewConfig =
     }
 
 
-validView : Model -> ( List CheckpointVis, List Edge ) -> Html.Html Msg
-validView model ( nodes, edges ) =
+validView : State -> ( List CheckpointVis, List Edge ) -> Html.Html StateMsg
+validView state ( nodes, edges ) =
     let
         controls =
             [ Html.div []
@@ -269,21 +266,21 @@ validView model ( nodes, edges ) =
                     [ HAttr.type_ "range"
                     , HAttr.min "0"
                     , HAttr.max "10"
-                    , HAttr.value (String.fromInt model.viewConfig.zoom)
+                    , HAttr.value (String.fromInt state.viewConfig.zoom)
                     , HtmlE.onInput ChangeZoom
                     ]
                     []
-                , Html.text (String.fromInt (2 ^ model.viewConfig.zoom))
+                , Html.text (String.fromInt (2 ^ state.viewConfig.zoom))
                 ]
             , Html.div
                 []
                 [ Html.text "Show checkpoint names"
-                , Html.input [ HAttr.type_ "checkbox", HAttr.checked model.viewConfig.showNames, HtmlE.onCheck ToggleShowName ] []
+                , Html.input [ HAttr.type_ "checkbox", HAttr.checked state.viewConfig.showNames, HtmlE.onCheck ToggleShowName ] []
                 ]
             ]
 
         focusedContent =
-            case model.focus of
+            case state.focus of
                 NoFocus ->
                     [ Html.text "click a node to see details" ]
 
@@ -303,10 +300,10 @@ validView model ( nodes, edges ) =
                     ]
 
         vis =
-            [ svg [ width "800", height <| String.fromInt (2000 * 2 ^ model.viewConfig.zoom) ] <|
+            [ svg [ width "800", height <| String.fromInt (2000 * 2 ^ state.viewConfig.zoom) ] <|
                 List.concat
-                    [ List.map (renderEdge model.viewConfig) edges
-                    , List.map (renderCheckpoint model.viewConfig) nodes
+                    [ List.map (renderEdge state.viewConfig) edges
+                    , List.map (renderCheckpoint state.config state.viewConfig) nodes
                     ]
             ]
     in
@@ -319,20 +316,27 @@ validView model ( nodes, edges ) =
 
 view : Model -> Html.Html Msg
 view model =
-    case graph of
-        Ok data ->
-            validView model (postProcess data)
+    case model of
+        Loading ->
+            Html.text "loading..."
 
-        Err whys ->
-            Html.table [] <|
-                List.map (\why -> Html.tr [] [ Html.td [] [ Html.text why ] ]) whys
+        Broken s ->
+            Html.text ("Broken: " ++ s)
+
+        Loaded state ->
+            case graph state.config of
+                Ok data ->
+                    Html.map StateUpdate <| validView state (postProcess data)
+
+                Err why ->
+                    Html.text ("Bad data: " ++ why)
 
 
-update : Msg -> Model -> Model
-update msg model =
+updateState : StateMsg -> State -> ( State, Cmd StateMsg )
+updateState msg model =
     case msg of
         Focus k ->
-            { model | focus = FocusedOn k }
+            ( { model | focus = FocusedOn k }, Cmd.none )
 
         ChangeZoom s ->
             let
@@ -341,23 +345,94 @@ update msg model =
             in
             case String.toInt s of
                 Just i ->
-                    { model | viewConfig = { vc | zoom = i } }
+                    ( { model | viewConfig = { vc | zoom = i } }, Cmd.none )
 
                 Nothing ->
-                    model
+                    ( model, Cmd.none )
 
         ToggleShowName showNames ->
             let
                 vc =
                     model.viewConfig
             in
-            { model | viewConfig = { vc | showNames = showNames } }
+            ( { model | viewConfig = { vc | showNames = showNames } }, Cmd.none )
+
+
+update : Msg -> Model -> ( Model, Cmd Msg )
+update msg wholeModel =
+    case ( msg, wholeModel ) of
+        ( ConfigLoaded config, Loading ) ->
+            ( Loaded { config = config, focus = NoFocus, viewConfig = { zoom = 0, showNames = True } }, Cmd.none )
+
+        ( FailedToLoad e, Loading ) ->
+            ( Broken e, Cmd.none )
+
+        ( StateUpdate u, Loaded state ) ->
+            let
+                ( newState, stateCmd ) =
+                    updateState u state
+            in
+            ( Loaded newState, Cmd.map StateUpdate stateCmd )
+
+        ( _, Broken _ ) ->
+            ( wholeModel, Cmd.none )
+
+        ( ConfigLoaded _, Loaded _ ) ->
+            ( Broken "Config reloaded", Cmd.none )
+
+        ( FailedToLoad _, Loaded _ ) ->
+            ( Broken "Load failure after load success", Cmd.none )
+
+        ( StateUpdate _, Loading ) ->
+            ( Broken "UI update before UI loaded", Cmd.none )
+
+
+loadData : Cmd Msg
+loadData =
+    let
+        metadataDecoder : D.Decoder CheckpointMetadataDefinition
+        metadataDecoder =
+            D.map CheckpointMetadataDefinition
+                (D.field "runtime" D.string)
+
+        edgeDecoder : D.Decoder EdgeDefinition
+        edgeDecoder =
+            D.map3 (\from to metadata -> ( from, to, metadata ))
+                (D.field "from" D.string)
+                (D.field "to" D.string)
+                (D.map EdgeMetadata (D.field "work" D.bool))
+
+        runtimeDefDecoder : D.Decoder RuntimeDefinition
+        runtimeDefDecoder =
+            D.map2 RuntimeDefinition
+                (D.field "index" D.int)
+                (D.field "color" D.string)
+
+        configDecoder : D.Decoder Config
+        configDecoder =
+            D.map4 Config
+                (D.field "checkpointToTime" (D.dict D.float))
+                (D.field "checkpointToMetadata" (D.dict metadataDecoder))
+                (D.field "edgeList" (D.list edgeDecoder))
+                (D.field "runtimes" (D.dict runtimeDefDecoder))
+
+        handleLoadResult : Result Http.Error Config -> Msg
+        handleLoadResult response =
+            case response of
+                Ok config ->
+                    ConfigLoaded config
+
+                Err e ->
+                    FailedToLoad ("Failed to load data: " ++ Debug.toString e)
+    in
+    Http.get { url = "data.json", expect = Http.expectJson handleLoadResult configDecoder }
 
 
 main : Platform.Program () Model Msg
 main =
-    Browser.sandbox
-        { init = { focus = NoFocus, viewConfig = { zoom = 0, showNames = True } }
+    Browser.element
+        { init = \_ -> ( Loading, loadData )
+        , subscriptions = \_ -> Sub.none
         , view = view
         , update = update
         }

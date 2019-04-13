@@ -5,3 +5,5 @@ repl-temp-*
 
 # Only produced by elm-live for now
 index.html
+
+cb-data.json
