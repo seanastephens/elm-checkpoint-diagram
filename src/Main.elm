@@ -14,6 +14,27 @@ import Svg.Attributes exposing (cx, cy, fill, height, r, rx, ry, stroke, strokeW
 import Svg.Events as SvgE
 
 
+type alias NonEmptyList t =
+    { head : t
+    , tail : List t
+    }
+
+
+nonEmptyMap : (t -> s) -> NonEmptyList t -> NonEmptyList s
+nonEmptyMap f { head, tail } =
+    { head = f head, tail = List.map f tail }
+
+
+nonEmptyMaximum : NonEmptyList comparable -> comparable
+nonEmptyMaximum { head, tail } =
+    List.maximum (head :: tail) |> Maybe.withDefault head
+
+
+nonEmptyMinimum : NonEmptyList comparable -> comparable
+nonEmptyMinimum { head, tail } =
+    List.minimum (head :: tail) |> Maybe.withDefault head
+
+
 type alias CheckpointMetadataDefinition =
     { runtime : String
     }
@@ -51,7 +72,7 @@ type alias Edge =
 
 type CheckpointVis
     = Single Checkpoint
-    | Group (List Checkpoint)
+    | Group (NonEmptyList Checkpoint)
 
 
 checkpointColor : Config -> Checkpoint -> String
@@ -68,16 +89,16 @@ checkpointX c =
 
 checkpointY : ViewConfig -> Checkpoint -> Float
 checkpointY viewConfig c =
-    50 + c.time * 450 * toFloat (2 ^ viewConfig.zoom)
+    50 + c.time * 450 * (2 ^ (toFloat viewConfig.zoom / 10))
 
 
-checkpointWidth : Checkpoint -> Float
-checkpointWidth _ =
+checkpointWidth : Float
+checkpointWidth =
     20
 
 
-checkpointHeight : Checkpoint -> Float
-checkpointHeight _ =
+checkpointHeight : Float
+checkpointHeight =
     20
 
 
@@ -88,10 +109,10 @@ renderCheckpoint config viewConfig ca =
             let
                 rect =
                     Svg.ellipse
-                        [ cx <| String.fromFloat (checkpointX c + checkpointWidth c / 2)
-                        , cy <| String.fromFloat (checkpointY viewConfig c + checkpointHeight c / 2)
-                        , rx <| String.fromFloat (checkpointWidth c / 2)
-                        , ry <| String.fromFloat (checkpointHeight c / 2)
+                        [ cx <| String.fromFloat (checkpointX c + checkpointWidth / 2)
+                        , cy <| String.fromFloat (checkpointY viewConfig c)
+                        , rx <| String.fromFloat (checkpointWidth / 2)
+                        , ry <| String.fromFloat (checkpointHeight / 2)
                         , fill <| checkpointColor config c
                         , stroke "grey"
                         , strokeWidth "2"
@@ -101,8 +122,8 @@ renderCheckpoint config viewConfig ca =
 
                 text =
                     Svg.text_
-                        [ x <| String.fromFloat (checkpointX c + checkpointWidth c + 5)
-                        , y <| String.fromFloat (checkpointY viewConfig c + checkpointHeight c / 2 + 10 / 2)
+                        [ x <| String.fromFloat (checkpointX c + checkpointWidth + 5)
+                        , y <| String.fromFloat (checkpointY viewConfig c + checkpointHeight / 2 + 10 / 2)
                         ]
                         [ Svg.text c.name ]
             in
@@ -113,8 +134,47 @@ renderCheckpoint config viewConfig ca =
                 False ->
                     Svg.g [] [ rect ]
 
-        Group _ ->
-            Svg.g [] []
+        Group cs ->
+            let
+                getCenterY =
+                    checkpointY viewConfig
+
+                loY =
+                    nonEmptyMinimum (nonEmptyMap getCenterY cs) - checkpointHeight / 2
+
+                hiY =
+                    nonEmptyMaximum (nonEmptyMap getCenterY cs) + checkpointHeight / 2
+
+                midY =
+                    (hiY + loY) / 2
+
+                rect =
+                    Svg.rect
+                        [ x <| String.fromFloat (checkpointX cs.head)
+                        , y <| String.fromFloat loY
+                        , width <| String.fromFloat checkpointWidth
+                        , height <| String.fromFloat (hiY - loY)
+                        , rx <| String.fromFloat (checkpointWidth / 2)
+                        , ry <| String.fromFloat (checkpointWidth / 2)
+                        , fill <| checkpointColor config cs.head
+                        , stroke "grey"
+                        , strokeWidth "2"
+                        ]
+                        []
+
+                text =
+                    Svg.text_
+                        [ x <| String.fromFloat (checkpointX cs.head + checkpointWidth + 5)
+                        , y <| String.fromFloat (midY + checkpointHeight / 2)
+                        ]
+                        [ Svg.text (String.fromInt (List.length cs.tail + 1) ++ " nodes") ]
+            in
+            case viewConfig.showNames of
+                True ->
+                    Svg.g [] [ rect, text ]
+
+                False ->
+                    Svg.g [] [ rect ]
 
 
 renderEdge : ViewConfig -> Edge -> Svg msg
@@ -129,16 +189,16 @@ renderEdge viewConfig ( from, to, { work } ) =
 
         width =
             if work then
-                String.fromFloat (checkpointWidth from * 0.25)
+                String.fromFloat (checkpointWidth * 0.25)
 
             else
                 "2"
     in
     line
-        [ x1 <| String.fromFloat (checkpointX from + checkpointWidth from / 2)
-        , x2 <| String.fromFloat (checkpointX to + checkpointWidth from / 2)
-        , y1 <| String.fromFloat (checkpointY viewConfig from + checkpointHeight from / 2)
-        , y2 <| String.fromFloat (checkpointY viewConfig to + checkpointHeight to / 2)
+        [ x1 <| String.fromFloat (checkpointX from + checkpointWidth / 2)
+        , x2 <| String.fromFloat (checkpointX to + checkpointWidth / 2)
+        , y1 <| String.fromFloat (checkpointY viewConfig from)
+        , y2 <| String.fromFloat (checkpointY viewConfig to)
         , stroke color
         , strokeWidth width
         ]
@@ -207,9 +267,64 @@ graph config =
     Result.map2 Tuple.pair maybeNodes maybeEdges
 
 
-postProcess : ( List Checkpoint, List Edge ) -> ( List CheckpointVis, List Edge )
-postProcess ( nodes, edges ) =
-    ( List.map Single nodes, edges )
+postProcess : ViewConfig -> ( List Checkpoint, List Edge ) -> ( List CheckpointVis, List Edge )
+postProcess viewConfig ( nodes, edges ) =
+    let
+        -- TODO: This is super confusing because Y toward bottom of screen
+        upper : Checkpoint -> Float
+        upper c =
+            checkpointY viewConfig c
+
+        listUpper : NonEmptyList Checkpoint -> Float
+        listUpper list =
+            nonEmptyMaximum (nonEmptyMap upper list)
+
+        lower : Checkpoint -> Float
+        lower c =
+            checkpointY viewConfig c
+
+        emit : NonEmptyList Checkpoint -> CheckpointVis
+        emit cs =
+            case cs.tail of
+                [] ->
+                    Single cs.head
+
+                _ ->
+                    Group cs
+
+        go : Checkpoint -> { runtimeToCheckpoints : Dict.Dict String (NonEmptyList Checkpoint), emittedCheckpoints : List CheckpointVis } -> { runtimeToCheckpoints : Dict.Dict String (NonEmptyList Checkpoint), emittedCheckpoints : List CheckpointVis }
+        go next state =
+            case Dict.get next.metadata.runtime state.runtimeToCheckpoints of
+                -- first checkpoint in this runtime
+                Nothing ->
+                    { state | runtimeToCheckpoints = Dict.insert next.metadata.runtime (NonEmptyList next []) state.runtimeToCheckpoints }
+
+                -- other checkpoints exist
+                Just others ->
+                    if lower next < listUpper others + checkpointHeight then
+                        -- they are close
+                        let
+                            newList =
+                                NonEmptyList next (others.head :: others.tail)
+                        in
+                        { state | runtimeToCheckpoints = Dict.insert next.metadata.runtime newList state.runtimeToCheckpoints }
+
+                    else
+                        -- they are far away
+                        { runtimeToCheckpoints = Dict.insert next.metadata.runtime (NonEmptyList next []) state.runtimeToCheckpoints
+                        , emittedCheckpoints = emit others :: state.emittedCheckpoints
+                        }
+
+        result =
+            List.sortBy upper nodes
+                |> List.foldl go { runtimeToCheckpoints = Dict.empty, emittedCheckpoints = [] }
+
+        -- And don't forget to "emit" all the pending checkpoints for each runtime
+        newNodes =
+            result.emittedCheckpoints
+                ++ List.map emit (Dict.values result.runtimeToCheckpoints)
+    in
+    ( newNodes, edges )
 
 
 type StateMsg
@@ -265,12 +380,12 @@ validView state ( nodes, edges ) =
                 , Html.input
                     [ HAttr.type_ "range"
                     , HAttr.min "0"
-                    , HAttr.max "10"
+                    , HAttr.max "100"
                     , HAttr.value (String.fromInt state.viewConfig.zoom)
                     , HtmlE.onInput ChangeZoom
                     ]
                     []
-                , Html.text (String.fromInt (2 ^ state.viewConfig.zoom))
+                , Html.text (String.fromFloat (2 ^ (toFloat state.viewConfig.zoom / 10)))
                 ]
             , Html.div
                 []
@@ -326,7 +441,7 @@ view model =
         Loaded state ->
             case graph state.config of
                 Ok data ->
-                    Html.map StateUpdate <| validView state (postProcess data)
+                    Html.map StateUpdate <| validView state (postProcess state.viewConfig data)
 
                 Err why ->
                     Html.text ("Bad data: " ++ why)
