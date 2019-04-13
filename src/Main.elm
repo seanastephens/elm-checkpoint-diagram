@@ -75,13 +75,6 @@ type CheckpointVis
     | Group (NonEmptyList Checkpoint)
 
 
-checkpointColor : Config -> Checkpoint -> String
-checkpointColor config c =
-    Dict.get c.metadata.runtime config.runtimes
-        |> Maybe.map (\runtime -> runtime.color)
-        |> Maybe.withDefault "lightgrey"
-
-
 checkpointX : Checkpoint -> Float
 checkpointX c =
     toFloat (c.metadata.runtimeIndex * 250 + 40)
@@ -102,8 +95,8 @@ checkpointHeight =
     20
 
 
-renderCheckpoint : Config -> ViewConfig -> CheckpointVis -> Svg StateMsg
-renderCheckpoint config viewConfig ca =
+renderCheckpoint : ViewConfig -> CheckpointVis -> Svg StateMsg
+renderCheckpoint viewConfig ca =
     case ca of
         Single c ->
             let
@@ -113,7 +106,7 @@ renderCheckpoint config viewConfig ca =
                         , cy <| String.fromFloat (checkpointY viewConfig c)
                         , rx <| String.fromFloat (checkpointWidth / 2)
                         , ry <| String.fromFloat (checkpointHeight / 2)
-                        , fill <| checkpointColor config c
+                        , fill c.metadata.runtimeColor
                         , stroke "grey"
                         , strokeWidth "2"
                         , SvgE.onClick (Focus c)
@@ -156,7 +149,7 @@ renderCheckpoint config viewConfig ca =
                         , height <| String.fromFloat (hiY - loY)
                         , rx <| String.fromFloat (checkpointWidth / 2)
                         , ry <| String.fromFloat (checkpointWidth / 2)
-                        , fill <| checkpointColor config cs.head
+                        , fill cs.head.metadata.runtimeColor
                         , stroke "grey"
                         , strokeWidth "2"
                         ]
@@ -418,7 +411,7 @@ validView state ( nodes, edges ) =
             [ svg [ width "800", height <| String.fromInt (2000 * 2 ^ state.viewConfig.zoom) ] <|
                 List.concat
                     [ List.map (renderEdge state.viewConfig) edges
-                    , List.map (renderCheckpoint state.config state.viewConfig) nodes
+                    , List.map (renderCheckpoint state.viewConfig) nodes
                     ]
             ]
     in
