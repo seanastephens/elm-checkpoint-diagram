@@ -1,14 +1,14 @@
 module Main exposing (main)
 
 import Browser exposing (sandbox)
-import Debug as Debug
-import Dict as Dict
-import Html as Html
-import Html.Attributes as HAttr
+import Debug
+import Dict
+import Html
+import Html.Attributes as HtmlA
 import Html.Events as HtmlE
-import Http as Http
+import Http
 import Json.Decode as D
-import List as List
+import List
 import Svg exposing (Svg, line, rect, svg)
 import Svg.Attributes exposing (cx, cy, fill, height, r, rx, ry, stroke, strokeWidth, style, width, x, x1, x2, y, y1, y2)
 import Svg.Events as SvgE
@@ -371,10 +371,10 @@ validView state ( nodes, edges ) =
             [ Html.div []
                 [ Html.text "Zoom"
                 , Html.input
-                    [ HAttr.type_ "range"
-                    , HAttr.min "0"
-                    , HAttr.max "100"
-                    , HAttr.value (String.fromInt state.viewConfig.zoom)
+                    [ HtmlA.type_ "range"
+                    , HtmlA.min "0"
+                    , HtmlA.max "100"
+                    , HtmlA.value (String.fromInt state.viewConfig.zoom)
                     , HtmlE.onInput ChangeZoom
                     ]
                     []
@@ -383,7 +383,7 @@ validView state ( nodes, edges ) =
             , Html.div
                 []
                 [ Html.text "Show checkpoint names"
-                , Html.input [ HAttr.type_ "checkbox", HAttr.checked state.viewConfig.showNames, HtmlE.onCheck ToggleShowName ] []
+                , Html.input [ HtmlA.type_ "checkbox", HtmlA.checked state.viewConfig.showNames, HtmlE.onCheck ToggleShowName ] []
                 ]
             ]
 
