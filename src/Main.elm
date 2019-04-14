@@ -11,7 +11,7 @@ import Json.Decode as D
 import Json.Encode as E
 import List
 import Svg exposing (Svg, line, rect, svg)
-import Svg.Attributes exposing (cx, cy, fill, height, r, rx, ry, stroke, strokeWidth, style, width, x, x1, x2, y, y1, y2)
+import Svg.Attributes exposing (cx, cy, fill, fillOpacity, height, r, rx, ry, stroke, strokeWidth, style, width, x, x1, x2, y, y1, y2)
 import Svg.Events as SvgE
 
 
@@ -96,7 +96,7 @@ checkpointHeight =
     20
 
 
-renderCheckpoint : ViewConfig -> CheckpointVis -> Svg StateMsg
+renderCheckpoint : ViewConfig -> CheckpointVis -> Svg Msg
 renderCheckpoint viewConfig ca =
     case ca of
         Single c ->
@@ -110,7 +110,6 @@ renderCheckpoint viewConfig ca =
                         , fill c.metadata.runtimeColor
                         , stroke "grey"
                         , strokeWidth "2"
-                        , SvgE.onClick (Focus c)
                         ]
                         []
 
@@ -199,8 +198,8 @@ renderEdge viewConfig ( from, to, { work } ) =
         []
 
 
-graph : Config -> Result String ( List Checkpoint, List Edge )
-graph config =
+validateConfig : Config -> Result String ValidConfig
+validateConfig config =
     let
         findPoint : String -> Result String Checkpoint
         findPoint name =
@@ -258,11 +257,11 @@ graph config =
         maybeNodes =
             List.foldl (Result.map2 (::)) (Ok []) maybeEachNode
     in
-    Result.map2 Tuple.pair maybeNodes maybeEdges
+    Result.map2 (\n e -> { checkpoints = n, edges = e }) maybeNodes maybeEdges
 
 
-postProcess : ViewConfig -> ( List Checkpoint, List Edge ) -> ( List CheckpointVis, List Edge )
-postProcess viewConfig ( nodes, edges ) =
+postProcess : ViewConfig -> ValidConfig -> ValidConfigVis
+postProcess viewConfig { checkpoints, edges } =
     let
         -- TODO: This is super confusing because Y toward bottom of screen
         upper : Checkpoint -> Float
@@ -310,27 +309,22 @@ postProcess viewConfig ( nodes, edges ) =
                         }
 
         result =
-            List.sortBy upper nodes
+            List.sortBy upper checkpoints
                 |> List.foldl go { runtimeToCheckpoints = Dict.empty, emittedCheckpoints = [] }
 
         -- And don't forget to "emit" all the pending checkpoints for each runtime
-        newNodes =
+        newCheckpoints =
             result.emittedCheckpoints
                 ++ List.map emit (Dict.values result.runtimeToCheckpoints)
     in
-    ( newNodes, edges )
-
-
-type StateMsg
-    = Focus Checkpoint
-    | ChangeZoom String
-    | ToggleShowName Bool
+    { checkpoints = newCheckpoints, edges = edges }
 
 
 type Msg
-    = FailedToLoad String
-    | ConfigLoaded Config
-    | StateUpdate StateMsg
+    = FailedToLoad { error : String, contents : String }
+    | ConfigInput String
+    | ChangeZoom String
+    | ToggleShowName Bool
 
 
 type alias Config =
@@ -341,20 +335,27 @@ type alias Config =
     }
 
 
-type Focus
-    = NoFocus
-    | FocusedOn Checkpoint
+type alias ValidConfig =
+    { checkpoints : List Checkpoint
+    , edges : List Edge
+    }
 
 
-type Model
+type alias ValidConfigVis =
+    { checkpoints : List CheckpointVis
+    , edges : List Edge
+    }
+
+
+type LoadState
     = Loading
-    | Loaded State
-    | Broken String
+    | Loaded ValidConfigVis
+    | Broken { lastConfig : Maybe ValidConfigVis, error : String }
 
 
-type alias State =
-    { config : Config
-    , focus : Focus
+type alias Model =
+    { config : LoadState
+    , input : String
     , viewConfig : ViewConfig
     }
 
@@ -365,8 +366,12 @@ type alias ViewConfig =
     }
 
 
-validView : State -> ( List CheckpointVis, List Edge ) -> Html.Html StateMsg
-validView state ( nodes, edges ) =
+sectionStyles =
+    [ HtmlA.style "float" "left", HtmlA.style "width" "50%" ]
+
+
+view : Model -> Html.Html Msg
+view model =
     let
         controls =
             [ Html.div []
@@ -375,92 +380,115 @@ validView state ( nodes, edges ) =
                     [ HtmlA.type_ "range"
                     , HtmlA.min "0"
                     , HtmlA.max "100"
-                    , HtmlA.value (String.fromInt state.viewConfig.zoom)
+                    , HtmlA.value (String.fromInt model.viewConfig.zoom)
                     , HtmlE.onInput ChangeZoom
                     ]
                     []
-                , Html.text (String.fromFloat (2 ^ (toFloat state.viewConfig.zoom / 10)))
+                , Html.text (String.left 6 <| String.fromFloat (2 ^ (toFloat model.viewConfig.zoom / 10)))
                 ]
             , Html.div
                 []
                 [ Html.text "Show checkpoint names"
-                , Html.input [ HtmlA.type_ "checkbox", HtmlA.checked state.viewConfig.showNames, HtmlE.onCheck ToggleShowName ] []
+                , Html.input [ HtmlA.type_ "checkbox", HtmlA.checked model.viewConfig.showNames, HtmlE.onCheck ToggleShowName ] []
                 ]
             ]
 
-        focusedContent =
-            case state.focus of
-                NoFocus ->
-                    [ Html.text "click a node to see details" ]
+        headerText =
+            case model.config of
+                Loading ->
+                    "loading..."
 
-                FocusedOn c ->
-                    [ Html.table []
-                        [ Html.tr []
-                            [ Html.td [] [ Html.text "name" ]
-                            , Html.td []
-                                [ Html.text c.name
-                                ]
-                            ]
-                        , Html.tr []
-                            [ Html.td [] [ Html.text "runtime" ]
-                            , Html.td [] [ Html.text c.metadata.runtime ]
-                            ]
-                        ]
-                    ]
+                Broken { lastConfig, error } ->
+                    "Broken: " ++ error
 
-        vis =
-            [ svg [ width "800", height <| String.fromInt (2000 * 2 ^ state.viewConfig.zoom) ] <|
-                List.concat
-                    [ List.map (renderEdge state.viewConfig) edges
-                    , List.map (renderCheckpoint state.viewConfig) nodes
-                    ]
-            ]
-
-        sectionStyles =
-            [ HtmlA.style "float" "left", HtmlA.style "width" "50%" ]
+                Loaded _ ->
+                    "Ok! :)"
     in
     Html.main_ []
-        [ Html.section sectionStyles
-            [ Html.div [] controls
-            , Html.div [] vis
-            , Html.div [] focusedContent
-            ]
+        [ Html.div [] [ Html.text headerText ]
+        , Html.section sectionStyles <|
+            case model.config of
+                Loading ->
+                    [ svg [] [] ]
+
+                Loaded c ->
+                    [ validView model c ]
+
+                Broken { lastConfig } ->
+                    case lastConfig of
+                        Just c ->
+                            [ validView model c ]
+
+                        Nothing ->
+                            [ svg [] [] ]
         , Html.section sectionStyles
-            [ Html.pre [] [ Html.text <| E.encode 2 <| encodeConfig state.config ] ]
+            [ Html.textarea
+                [ HtmlA.style "width" "100%"
+                , HtmlA.style "height" "500px"
+                , HtmlA.spellcheck False
+                , HtmlE.onInput ConfigInput
+                ]
+                [ Html.text model.input ]
+            ]
         ]
 
 
-view : Model -> Html.Html Msg
-view model =
-    case model of
-        Loading ->
-            Html.text "loading..."
+validView : Model -> ValidConfigVis -> Html.Html Msg
+validView model { checkpoints, edges } =
+    svg
+        [ width "800"
+        , height <| String.fromInt (2000 * 2 ^ model.viewConfig.zoom)
+        ]
+        (Svg.rect
+            [ width "100%"
+            , height "100%"
+            , fill <|
+                case model.config of
+                    Broken _ ->
+                        "#FEE"
 
-        Broken s ->
-            Html.text ("Broken: " ++ s)
-
-        Loaded state ->
-            case graph state.config of
-                Ok data ->
-                    Html.map StateUpdate <| validView state (postProcess state.viewConfig data)
-
-                Err why ->
-                    Html.text ("Bad data: " ++ why)
+                    _ ->
+                        "white"
+            ]
+            []
+            :: List.map (renderEdge model.viewConfig) edges
+            ++ List.map (renderCheckpoint model.viewConfig) checkpoints
+        )
 
 
-updateState : StateMsg -> State -> ( State, Cmd StateMsg )
-updateState msg model =
+update : Msg -> Model -> ( Model, Cmd Msg )
+update msg model =
+    let
+        broken why =
+            case model.config of
+                Loaded validConfig ->
+                    Broken { lastConfig = Just validConfig, error = why }
+
+                Loading ->
+                    Broken { lastConfig = Nothing, error = why }
+
+                Broken { lastConfig } ->
+                    Broken { lastConfig = lastConfig, error = why }
+    in
     case msg of
-        Focus k ->
-            ( { model | focus = FocusedOn k }, Cmd.none )
+        FailedToLoad { error, contents } ->
+            ( { model | config = broken error, input = contents }, Cmd.none )
+
+        ConfigInput s ->
+            case D.decodeString decodeConfig s |> Result.mapError (\_ -> "bad json") |> Result.andThen validateConfig |> Result.map (postProcess model.viewConfig) of
+                Ok config ->
+                    ( { model | config = Loaded config, input = s }, Cmd.none )
+
+                Err e ->
+                    ( { model | config = broken e, input = s }, Cmd.none )
 
         ChangeZoom s ->
-            let
-                vc =
-                    model.viewConfig
-            in
             case String.toInt s of
                 Just i ->
+                    let
+                        vc =
+                            model.viewConfig
+                    in
                     ( { model | viewConfig = { vc | zoom = i } }, Cmd.none )
 
                 Nothing ->
@@ -472,35 +500,6 @@ updateState msg model =
                     model.viewConfig
             in
             ( { model | viewConfig = { vc | showNames = showNames } }, Cmd.none )
-
-
-update : Msg -> Model -> ( Model, Cmd Msg )
-update msg wholeModel =
-    case ( msg, wholeModel ) of
-        ( ConfigLoaded config, Loading ) ->
-            ( Loaded { config = config, focus = NoFocus, viewConfig = { zoom = 0, showNames = True } }, Cmd.none )
-
-        ( FailedToLoad e, Loading ) ->
-            ( Broken e, Cmd.none )
-
-        ( StateUpdate u, Loaded state ) ->
-            let
-                ( newState, stateCmd ) =
-                    updateState u state
-            in
-            ( Loaded newState, Cmd.map StateUpdate stateCmd )
-
-        ( _, Broken _ ) ->
-            ( wholeModel, Cmd.none )
-
-        ( ConfigLoaded _, Loaded _ ) ->
-            ( Broken "Config reloaded", Cmd.none )
-
-        ( FailedToLoad _, Loaded _ ) ->
-            ( Broken "Load failure after load success", Cmd.none )
-
-        ( StateUpdate _, Loading ) ->
-            ( Broken "UI update before UI loaded", Cmd.none )
 
 
 encodeConfig : Config -> E.Value
@@ -543,8 +542,8 @@ encodeConfig config =
         ]
 
 
-configDecoder : D.Decoder Config
-configDecoder =
+decodeConfig : D.Decoder Config
+decodeConfig =
     let
         metadataDecoder : D.Decoder CheckpointMetadataDefinition
         metadataDecoder =
@@ -574,22 +573,29 @@ configDecoder =
 loadData : Cmd Msg
 loadData =
     let
-        handleLoadResult : Result Http.Error Config -> Msg
+        handleLoadResult : Result Http.Error String -> Msg
         handleLoadResult response =
             case response of
-                Ok config ->
-                    ConfigLoaded config
+                Ok body ->
+                    ConfigInput body
 
                 Err e ->
-                    FailedToLoad ("Failed to load data: " ++ Debug.toString e)
+                    FailedToLoad { error = "Failed to load: " ++ Debug.toString e, contents = "" }
     in
-    Http.get { url = "data.json", expect = Http.expectJson handleLoadResult configDecoder }
+    Http.get { url = "data.json", expect = Http.expectString handleLoadResult }
 
 
 main : Platform.Program () Model Msg
 main =
     Browser.element
-        { init = \_ -> ( Loading, loadData )
+        { init =
+            \_ ->
+                ( { config = Loading
+                  , viewConfig = { zoom = 0, showNames = True }
+                  , input = ""
+                  }
+                , loadData
+                )
         , subscriptions = \_ -> Sub.none
         , view = view
         , update = update
