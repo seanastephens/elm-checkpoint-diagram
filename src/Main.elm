@@ -8,6 +8,7 @@ import Html.Attributes as HtmlA
 import Html.Events as HtmlE
 import Http
 import Json.Decode as D
+import Json.Encode as E
 import List
 import Svg exposing (Svg, line, rect, svg)
 import Svg.Attributes exposing (cx, cy, fill, height, r, rx, ry, stroke, strokeWidth, style, width, x, x1, x2, y, y1, y2)
@@ -414,11 +415,18 @@ validView state ( nodes, edges ) =
                     , List.map (renderCheckpoint state.viewConfig) nodes
                     ]
             ]
+
+        sectionStyles =
+            [ HtmlA.style "float" "left", HtmlA.style "width" "50%" ]
     in
     Html.main_ []
-        [ Html.section [] controls
-        , Html.section [] vis
-        , Html.section [] focusedContent
+        [ Html.section sectionStyles
+            [ Html.div [] controls
+            , Html.div [] vis
+            , Html.div [] focusedContent
+            ]
+        , Html.section sectionStyles
+            [ Html.pre [] [ Html.text <| E.encode 2 <| encodeConfig state.config ] ]
         ]
 
 
@@ -495,8 +503,48 @@ update msg wholeModel =
             ( Broken "UI update before UI loaded", Cmd.none )
 
 
-loadData : Cmd Msg
-loadData =
+encodeConfig : Config -> E.Value
+encodeConfig config =
+    let
+        encodeRuntimeDef : RuntimeDefinition -> E.Value
+        encodeRuntimeDef r =
+            E.object [ ( "index", E.int r.index ), ( "color", E.string r.color ) ]
+
+        runtimeDef : E.Value
+        runtimeDef =
+            E.object <| List.map (Tuple.mapSecond encodeRuntimeDef) <| Dict.toList config.runtimes
+
+        encodeEdge : EdgeDefinition -> E.Value
+        encodeEdge ( from, to, metadata ) =
+            E.object
+                [ ( "from", E.string from )
+                , ( "to", E.string to )
+                , ( "work", E.bool metadata.work )
+                ]
+
+        edgeDef =
+            E.list encodeEdge config.edgeList
+
+        checkpointTimeDef =
+            E.object <| List.map (Tuple.mapSecond E.float) <| Dict.toList config.checkpointToTime
+
+        encodeCheckpointMeta : CheckpointMetadataDefinition -> E.Value
+        encodeCheckpointMeta meta =
+            E.object [ ( "runtime", E.string meta.runtime ) ]
+
+        checkpointMetaDef =
+            E.object <| List.map (Tuple.mapSecond encodeCheckpointMeta) <| Dict.toList config.checkpointToMetadata
+    in
+    E.object
+        [ ( "checkpointToTime", checkpointTimeDef )
+        , ( "checkpointToMetadata", checkpointMetaDef )
+        , ( "edgeList", edgeDef )
+        , ( "runtimes", runtimeDef )
+        ]
+
+
+configDecoder : D.Decoder Config
+configDecoder =
     let
         metadataDecoder : D.Decoder CheckpointMetadataDefinition
         metadataDecoder =
@@ -515,15 +563,17 @@ loadData =
             D.map2 RuntimeDefinition
                 (D.field "index" D.int)
                 (D.field "color" D.string)
+    in
+    D.map4 Config
+        (D.field "checkpointToTime" (D.dict D.float))
+        (D.field "checkpointToMetadata" (D.dict metadataDecoder))
+        (D.field "edgeList" (D.list edgeDecoder))
+        (D.field "runtimes" (D.dict runtimeDefDecoder))
 
-        configDecoder : D.Decoder Config
-        configDecoder =
-            D.map4 Config
-                (D.field "checkpointToTime" (D.dict D.float))
-                (D.field "checkpointToMetadata" (D.dict metadataDecoder))
-                (D.field "edgeList" (D.list edgeDecoder))
-                (D.field "runtimes" (D.dict runtimeDefDecoder))
 
+loadData : Cmd Msg
+loadData =
+    let
         handleLoadResult : Result Http.Error Config -> Msg
         handleLoadResult response =
             case response of
